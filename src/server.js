@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { runOrchestrator } from './orchestrator.js';
+import { AppFactory } from './AppFactory.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,32 +8,31 @@ const API_KEY = process.env.API_KEY;
 
 app.use(express.json());
 
-// シンプルな認証ミドルウェア
+/**
+ * `x-api-key` ヘッダーを検証して正しい API キーが含まれているかを確認するミドルウェア。
+ * @param {import('express').Request} req - 受信リクエスト。
+ * @param {import('express').Response} res - エラーを返すためのレスポンス。
+ * @param {import('express').NextFunction} next - 連鎖処理を継続するためのコールバック。
+ */
 function requireAuth(req, res, next) {
   const apiKey = req.headers['x-api-key'];
-  
   if (!apiKey || apiKey !== API_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
 }
 
-// ヘルスチェック
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'TaskThreadSync API' });
+  res.json({ status: 'ok', service: 'TaskThreadSync API (v2)' });
 });
 
-// 同期実行トリガー
 app.post('/api/sync', requireAuth, async (req, res) => {
-  console.log('Received sync trigger via API');
-  
+  console.log('Received sync trigger via API (v2)');
   try {
-    // 同期処理を実行
-    // Vercelなどのサーバーレス環境ではタイムアウト(通常10秒~60秒)に注意が必要。
-    // 処理が長い場合はバックグラウンドジョブにするのが理想だが、
-    // ここではレスポンスを待って返す実装とする。
-    const result = await runOrchestrator();
-    
+    // リクエストごとにインスタンスを生成し、常に最新のシートデータを取得できるようにする
+    const factory = new AppFactory({ env: process.env, logger: console });
+    const orchestrator = factory.createOrchestrator();
+    const result = await orchestrator.run();
     res.json({
       status: 'success',
       timestamp: new Date().toISOString(),
@@ -48,14 +47,10 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   }
 });
 
-// Vercel環境ではなく、かつ直接実行された場合のみ listen する
-// Vercelではプラットフォーム側がリクエストを処理するため app.listen は不要だが、
-// ローカル開発(npm run dev)では必要。
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
   });
 }
 
-// Vercelのために app をエクスポートする
 export default app;

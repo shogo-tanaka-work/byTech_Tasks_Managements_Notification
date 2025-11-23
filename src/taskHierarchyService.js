@@ -1,37 +1,68 @@
-const REQUIRED_CHILD_FIELDS = ['taskId', 'title', 'dueDate', 'status'];
+/**
+ * リポジトリのデータから正規化されたプロジェクトスナップショットを構築し、完了状況を集計する。
+ */
+export class TaskHierarchyService {
+  constructor({
+    repository,
+    diffDetector = {},
+    clock = () => new Date().toISOString(),
+    logger = console
+  } = {}) {
+    if (!repository) {
+      throw new Error('repository が指定されていません。');
+    }
 
-export function createTaskHierarchyService({
-  repository,
-  progressService,
-  diffDetector = {},
-  clock = () => new Date().toISOString()
-} = {}) {
-  if (!repository) throw new Error('repository が指定されていません。');
-  if (!progressService) throw new Error('progressService が指定されていません。');
-
-  async function buildProjectSnapshots({ cursor = 0, limit = Infinity } = {}) {
-    const parents = await repository.fetchParentRows({ cursor, limit });
-    if (!parents) return [];
-    
-    // 並列処理でスナップショット生成
-    const snapshots = await Promise.all(
-      parents.map((parent) => buildSnapshotForParent(parent))
-    );
-    return snapshots;
+    this.repository = repository;
+    this.diffDetector = diffDetector;
+    this.clock = clock;
+    this.logger = logger;
+    this.requiredChildFields = ['taskId', 'title', 'dueDate', 'status'];
   }
 
-  async function buildSnapshotForParent(parentRow) {
-    const rawChildren = await repository.fetchChildRows(parentRow.projectId) || [];
-    const { validChildren, invalidChildren } = partitionChildren(rawChildren);
-    
-    // diffDetector はオプションなのでそのまま
+  /**
+   * 指定されたカーソル範囲内でプロジェクトスナップショットを構築する。
+   * @param {{cursor?: number, limit?: number}} [options]
+   * @returns {Promise<Array<object>>}
+   */
+  async buildProjectSnapshots({ cursor = 0, limit = Infinity } = {}) {
+    const parents = await this.repository.fetchParentRows({ cursor, limit });
+    if (!parents?.length) {
+      return [];
+    }
+    return Promise.all(parents.map((parent) => this.#buildSnapshotForParent(parent)));
+  }
+
+  /**
+   * Discord スレッド ID をスプレッドシートへ書き戻す。
+   * @param {{rowIndex: number, threadId: string}} params
+   * @returns {Promise<void>}
+   */
+  async markThread({ rowIndex, threadId }) {
+    if (!Number.isInteger(rowIndex)) {
+      throw new Error('rowIndex は整数で指定してください。');
+    }
+    if (!threadId) {
+      throw new Error('threadId を指定してください。');
+    }
+    return this.repository.updateThreadId({ rowIndex, threadId });
+  }
+
+  /**
+   * 親子データに検証結果と完了メトリクスを付与する。
+   * @param {object} parentRow
+   * @returns {Promise<object>}
+   * @private
+   */
+  async #buildSnapshotForParent(parentRow) {
+    const rawChildren = (await this.repository.fetchChildRows(parentRow.projectId)) || [];
+    const { validChildren, invalidChildren } = this.#partitionChildren(rawChildren);
+
     const annotatedChildren = validChildren.map((child) => ({
       ...child,
-      markers: diffDetector.diff?.(parentRow.projectId, child) ?? []
+      markers: this.diffDetector.diff?.(parentRow.projectId, child) ?? []
     }));
 
-    const completion = progressService.calculate(annotatedChildren);
-    const shouldPost = progressService.shouldUpdate?.(parentRow.projectId, completion) ?? true;
+    const completion = this.#calculateCompletion(annotatedChildren);
 
     return {
       rowIndex: parentRow.rowIndex,
@@ -39,34 +70,25 @@ export function createTaskHierarchyService({
       title: parentRow.title,
       owner: parentRow.owner,
       threadId: parentRow.threadId,
-      timestamp: clock(),
+      timestamp: this.clock(),
       completion,
       children: annotatedChildren,
-      invalidChildren,
-      shouldPost
+      invalidChildren
     };
   }
 
-  async function markThread({ rowIndex, threadId }) {
-    if (!rowIndex || !threadId) {
-      throw new Error('rowIndex と threadId を指定してください。');
-    }
-    return repository.updateThreadId({ rowIndex, threadId });
-  }
-  
-  function saveProgress(projectId, completion) {
-    progressService.persist?.(projectId, {
-        ...completion,
-        updatedAt: clock()
-    });
-  }
-
-  function partitionChildren(children) {
+  /**
+   * 必須項目の有無で子タスクを有効／無効に振り分ける。
+   * @param {Array<object>} children
+   * @returns {{validChildren: Array<object>, invalidChildren: Array<object>}}
+   * @private
+   */
+  #partitionChildren(children) {
     const validChildren = [];
     const invalidChildren = [];
 
     children.forEach((child) => {
-      const missing = REQUIRED_CHILD_FIELDS.filter((field) => !stringValue(child[field]));
+      const missing = this.requiredChildFields.filter((field) => !this.#hasValue(child[field]));
       if (missing.length) {
         invalidChildren.push({
           taskId: child.taskId || '不明',
@@ -80,15 +102,35 @@ export function createTaskHierarchyService({
     return { validChildren, invalidChildren };
   }
 
-  function stringValue(value) {
-    if (value === null || value === undefined) return false;
+  /**
+   * トリム後に有効な値が入っているかを判定する。
+   * @param {*} value
+   * @returns {boolean}
+   * @private
+   */
+  #hasValue(value) {
+    if (value === null || value === undefined) {
+      return false;
+    }
     return String(value).trim().length > 0;
   }
 
-  return {
-    buildProjectSnapshots,
-    markThread,
-    saveProgress
-  };
+  /**
+   * 子タスクを集計して完了メトリクスを算出する。
+   * 以前は ProgressSnapshotService に存在していた calculate ロジックを統合している。
+   * @param {Array<object>} children
+   * @returns {{total: number, done: number, percentage: number, updatedAt: string}}
+   * @private
+   */
+  #calculateCompletion(children = []) {
+    const total = children.length;
+    const done = children.filter((child) => child.status === '完了').length;
+    const percentage = total === 0 ? 0 : Math.round((done / total) * 100);
+    return {
+      total,
+      done,
+      percentage,
+      updatedAt: this.clock()
+    };
+  }
 }
-

@@ -1,57 +1,117 @@
-const DEFAULT_BACKOFF_MS = [1000, 2000, 4000];
+import { DISCORD_SETTINGS } from './config.js';
+
+const { DEFAULT_BACKOFF_MS, API_BASE_URL, THREAD_AUTO_ARCHIVE_MINUTES } = DISCORD_SETTINGS;
 
 /**
- * Discord フォーラム API クライアント (Node.js fetch版)
+ * Discord フォーラムスレッドへスナップショットを投稿するための簡易 REST クライアント。リトライを内蔵する。
  */
-export function createDiscordForumClient({ botToken, forumChannelId } = {}) {
-  if (!botToken) throw new Error('Discord Bot Token が設定されていません。');
-  if (!forumChannelId) throw new Error('フォーラムチャンネルIDが設定されていません。');
+export class DiscordForumClient {
+  constructor({ botToken, forumChannelId, baseUrl = API_BASE_URL, logger = console } = {}) {
+    if (!botToken) {
+      throw new Error('Discord Bot Token が設定されていません。');
+    }
+    if (!forumChannelId) {
+      throw new Error('フォーラムチャンネルIDが設定されていません。');
+    }
 
-  const BASE_URL = 'https://discord.com/api/v10';
+    this.botToken = botToken;
+    this.forumChannelId = forumChannelId;
+    this.baseUrl = baseUrl;
+    this.logger = logger;
+  }
 
-  async function ensureThread({ threadId, payload }) {
+  /**
+   * threadId が無ければ新規スレッドを作成し、指定されていれば既存スレッドに投稿する。
+   * @param {{threadId?: string, payload: object}} params
+   * @returns {Promise<{threadId: string, messageId?: string}>}
+   */
+  async ensureThread({ threadId, payload }) {
     if (!threadId) {
-      // 新規作成
-      const url = `${BASE_URL}/channels/${forumChannelId}/threads`;
-      // name のフォールバック
+      const url = `${this.baseUrl}/channels/${this.forumChannelId}/threads`;
       const threadName = payload.name || (payload.content ? payload.content.slice(0, 50) : 'New Thread');
-      
-      const { body } = await requestWithRetry(url, {
+      const { body } = await this.#requestWithRetry(url, {
         method: 'POST',
         body: JSON.stringify({
           name: threadName,
-          auto_archive_duration: 10080,
-          message: payload // { content, embeds }
+          auto_archive_duration: THREAD_AUTO_ARCHIVE_MINUTES,
+          message: payload
         })
       });
       return { threadId: body.id, messageId: body.message?.id };
     }
 
-    // 既存スレッドへの投稿
-    const url = `${BASE_URL}/channels/${threadId}/messages`;
-    await requestWithRetry(url, {
+    const url = `${this.baseUrl}/channels/${threadId}/messages`;
+    await this.#requestWithRetry(url, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
     return { threadId };
   }
 
-  async function updateThreadMeta({ threadId, name }) {
-    const url = `${BASE_URL}/channels/${threadId}`;
-    const { body } = await requestWithRetry(url, {
-      method: 'PATCH',
-      body: JSON.stringify({ name })
-    });
-    return { threadId: body.id || threadId, name: body.name || name };
+  /**
+   * Discord スレッドのメタ情報（進捗を示す名前など）と、必要に応じて開始メッセージを更新する。
+   * @param {{threadId: string, name?: string, payload?: object}} params
+   * @returns {Promise<{threadId: string, name: string}>}
+   */
+  async updateThreadMeta({ threadId, name, payload }) {
+    // 1. スレッド名の更新
+    let currentName = name;
+    if (name) {
+      const url = `${this.baseUrl}/channels/${threadId}`;
+      const { body } = await this.#requestWithRetry(url, {
+        method: 'PATCH',
+        body: JSON.stringify({ name })
+      });
+      currentName = body.name || name;
+    }
+
+    // 2. 開始メッセージの更新 (payload が指定されている場合)
+    if (payload) {
+      // Forum Thread では通常 Starter Message ID = Thread ID とみなして更新する
+      // 失敗してもログに残してスレッド名の更新結果は返す
+      try {
+        const messageUrl = `${this.baseUrl}/channels/${threadId}/messages/${threadId}`;
+        await this.#requestWithRetry(messageUrl, {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+      } catch (error) {
+        this.logger.warn(`Failed to update starter message for thread ${threadId}: ${error.message}`);
+      }
+    }
+
+    return { threadId, name: currentName };
   }
 
-  async function requestWithRetry(url, options, attempt = 0) {
+  /**
+   * 指定したメッセージを編集する。
+   * @param {{channelId: string, messageId: string, payload: object}} params
+   * @returns {Promise<{id: string}>}
+   */
+  async editMessage({ channelId, messageId, payload }) {
+    const url = `${this.baseUrl}/channels/${channelId}/messages/${messageId}`;
+    const { body } = await this.#requestWithRetry(url, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    });
+    return body;
+  }
+
+  /**
+   * Discord 用ヘッダーを付与しつつ HTTP リクエストを実行し、429 の際はバックオフする。
+   * @param {string} url
+   * @param {RequestInit} options
+   * @param {number} [attempt=0]
+   * @returns {Promise<{body: any}>}
+   * @private
+   */
+  async #requestWithRetry(url, options, attempt = 0) {
     const finalOptions = {
       ...options,
       headers: {
-        Authorization: `Bot ${botToken}`,
+        Authorization: `Bot ${this.botToken}`,
         'Content-Type': 'application/json',
-        'User-Agent': 'DiscordBot (https://script.google.com, 1.0.0)', // VercelでもBot識別子は入れておく
+        'User-Agent': 'DiscordBot (https://script.google.com, 1.0.0)',
         ...options.headers
       }
     };
@@ -59,9 +119,8 @@ export function createDiscordForumClient({ botToken, forumChannelId } = {}) {
     const response = await fetch(url, finalOptions);
 
     if (response.status === 429 && attempt < DEFAULT_BACKOFF_MS.length) {
-      // Rate Limit
-      await delay(DEFAULT_BACKOFF_MS[attempt]);
-      return requestWithRetry(url, options, attempt + 1);
+      await this.#delay(DEFAULT_BACKOFF_MS[attempt]);
+      return this.#requestWithRetry(url, options, attempt + 1);
     }
 
     if (!response.ok) {
@@ -74,7 +133,6 @@ export function createDiscordForumClient({ botToken, forumChannelId } = {}) {
       throw new Error(`Discord API Error: ${response.status} ${JSON.stringify(errorBody)}`);
     }
 
-    // 204 No Content などの場合
     if (response.status === 204) {
       return { body: {} };
     }
@@ -83,13 +141,13 @@ export function createDiscordForumClient({ botToken, forumChannelId } = {}) {
     return { body };
   }
 
-  function delay(ms) {
+  /**
+   * リトライ用のバックオフ待機を行う簡易ディレイ。
+   * @param {number} ms
+   * @returns {Promise<void>}
+   * @private
+   */
+  #delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-
-  return {
-    ensureThread,
-    updateThreadMeta
-  };
 }
-

@@ -1,104 +1,103 @@
-import { createSheetHierarchyRepository } from './sheetRepository.js';
-import { createProgressSnapshotService } from './progressSnapshotService.js';
-import { createTaskHierarchyService } from './taskHierarchyService.js';
-import { createNotificationFormatter } from './notificationFormatter.js';
-import { createDiscordForumClient } from './discordForumClient.js';
-
 const DEFAULT_THREAD_NAME_TEMPLATE = (snapshot) =>
-  `${snapshot.projectId} | ${snapshot.completion?.percentage ?? 0}%`;
+  `${snapshot.title} | ${snapshot.completion?.percentage ?? 0}%`;
 
 /**
- * 環境変数を元に依存関係を構築し、同期処理を実行する関数
+ * プロジェクト取得・Discord 投稿・状態保存まで、同期サイクル全体を連携させる。
  */
-export async function runOrchestrator() {
-  console.log('Initializing Orchestrator...');
-
-  // 依存関係の構築
-  const repository = createSheetHierarchyRepository({
-    spreadsheetId: process.env.SPREADSHEET_ID,
-    googleServiceAccountEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    googlePrivateKey: process.env.GOOGLE_PRIVATE_KEY
-  });
-
-  const progressService = createProgressSnapshotService();
-
-  const taskService = createTaskHierarchyService({
-    repository,
-    progressService
-  });
-
-  const formatter = createNotificationFormatter();
-
-  const discordClient = createDiscordForumClient({
-    botToken: process.env.DISCORD_BOT_TOKEN,
-    forumChannelId: process.env.DISCORD_FORUM_CHANNEL_ID
-  });
-
-  // 実行サイクル
-  return await executeSyncCycle({ taskService, discordClient, formatter });
-}
-
-async function executeSyncCycle({ taskService, discordClient, formatter }) {
-  // 1. 全プロジェクトのスナップショットを取得
-  const snapshots = await taskService.buildProjectSnapshots();
-  console.log(`処理対象プロジェクト数: ${snapshots.length}`);
-  
-  const results = {
-    success: 0,
-    failed: 0,
-    errors: []
-  };
-
-  // 2. ループ処理
-  for (const snapshot of snapshots) {
-    console.log(`[Processing] ProjectID: ${snapshot.projectId}, shouldPost: ${snapshot.shouldPost}`);
-    
-    try {
-      await processSnapshot(snapshot, { taskService, discordClient, formatter });
-      results.success++;
-    } catch (error) {
-      console.error(`Project Error (ID: ${snapshot.projectId}):`, error);
-      results.failed++;
-      results.errors.push({ projectId: snapshot.projectId, message: error.message });
+export class Orchestrator {
+  constructor({ taskService, discordClient, formatter, logger = console } = {}) {
+    if (!taskService || !discordClient || !formatter) {
+      throw new Error('taskService, discordClient, formatter は必須です。');
     }
+    this.taskService = taskService;
+    this.discordClient = discordClient;
+    this.formatter = formatter;
+    this.logger = logger;
   }
-  
-  return results;
+
+  /**
+   * サーバー／API から呼び出され、一度の同期処理を実行する入口。
+   * @returns {Promise<{success: number, failed: number, errors: Array<object>}>}
+   */
+  async run() {
+    this.logger.log('Initializing Orchestrator...');
+    return this.#executeSyncCycle();
+  }
+
+  /**
+   * スナップショットを構築し処理しながら、成功・失敗などの統計を記録する。
+   * @returns {Promise<{success: number, failed: number, errors: Array<object>}>}
+   * @private
+   */
+  async #executeSyncCycle() {
+    // ここでシートの読み込みが行われる。リアルタイム取得ではなくインスタンス生成時点での内容となる。
+    const snapshots = await this.taskService.buildProjectSnapshots();
+    this.logger.log(`処理対象プロジェクト数: ${snapshots.length}`);
+
+    const results = {
+      success: 0,
+      failed: 0,
+      errors: []
+    };
+
+    for (const snapshot of snapshots) {
+      this.logger.log(`[Processing] ProjectID: ${snapshot.projectId}`);
+      try {
+        await this.#processSnapshot(snapshot);
+        results.success++;
+      } catch (error) {
+        this.logger.error(`Project Error (ID: ${snapshot.projectId}):`, error);
+        results.failed++;
+        results.errors.push({ projectId: snapshot.projectId, message: error.message });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Discord スレッドの確保・投稿・書き戻し・進捗保存までを一連で行う。
+   * @param {object} snapshot
+   * @returns {Promise<void>}
+   * @private
+   */
+  async #processSnapshot(snapshot) {
+    // 新規スレッド作成フロー。threadId がない場合は新規スレッドを作成する。
+    if (!snapshot.threadId) {
+      const payload = this.formatter.buildInitialMessage(snapshot);
+      payload.name = DEFAULT_THREAD_NAME_TEMPLATE(snapshot);
+
+      const threadInfo = await this.discordClient.ensureThread({
+        threadId: null,
+        payload
+      });
+
+      const threadId = threadInfo.threadId;
+      if (threadId && Number.isInteger(snapshot.rowIndex)) {
+        await this.taskService.markThread({ rowIndex: snapshot.rowIndex, threadId });
+      }
+      this.logger.log(`New thread created for: ${snapshot.projectId}`);
+      return;
+    }
+
+    // 以降は既存スレッド更新フローとなる。
+    // 1. スレッドタイトルとメインEmbed (Starter Message) を一括更新
+    const threadName = DEFAULT_THREAD_NAME_TEMPLATE(snapshot);
+    const initialPayload = this.formatter.buildInitialMessage(snapshot);
+
+    await this.discordClient.updateThreadMeta({
+      threadId: snapshot.threadId,
+      name: threadName,
+      payload: initialPayload
+    });
+
+    // 2. 進捗の有無に関わらず、毎回個別メッセージを投稿する
+    const updatePayload = this.formatter.buildUpdateMessage(snapshot);
+    await this.discordClient.ensureThread({
+      threadId: snapshot.threadId,
+      payload: updatePayload
+    });
+
+    this.logger.log(`Update posted for: ${snapshot.projectId}`);
+  }
 }
-
-async function processSnapshot(snapshot, { taskService, discordClient, formatter }) {
-  // 投稿不要ならスキップ (未投稿の場合は強制実行)
-  if (!snapshot.shouldPost && snapshot.threadId) {
-    return;
-  }
-
-  // 送信データの作成
-  const payload = formatter.buildThreadMessage(snapshot);
-  // スレッド名付与
-  payload.name = DEFAULT_THREAD_NAME_TEMPLATE(snapshot);
-
-  // Discordへ送信（作成または更新）
-  const threadInfo = await discordClient.ensureThread({
-    threadId: snapshot.threadId,
-    payload
-  });
-
-  const threadId = threadInfo.threadId || snapshot.threadId;
-
-  // 新規スレッドIDが発行された場合はシートに書き戻す
-  if (threadId && snapshot.rowIndex !== undefined && threadId !== snapshot.threadId) {
-    await taskService.markThread({ rowIndex: snapshot.rowIndex, threadId });
-  }
-
-  // スレッド名の更新
-  await discordClient.updateThreadMeta({
-    threadId,
-    name: DEFAULT_THREAD_NAME_TEMPLATE(snapshot)
-  });
-
-  // 完了状態の保存
-  taskService.saveProgress(snapshot.projectId, snapshot.completion);
-
-  console.log(`Sync done for: ${snapshot.projectId}`);
-}
-
