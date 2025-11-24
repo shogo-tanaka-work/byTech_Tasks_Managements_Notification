@@ -91,8 +91,8 @@ export class Orchestrator {
       payload: initialPayload
     });
 
-    // 2. 進捗の有無に関わらず、毎回個別メッセージを投稿する
-    const updatePayload = this.formatter.buildUpdateMessage(snapshot);
+    // 2. 進捗の有無に関わらず、毎回最新状況のメッセージを投稿する
+    const updatePayload = this.formatter.buildCurrentStatusMessage(snapshot);
     await this.discordClient.ensureThread({
       threadId: snapshot.threadId,
       payload: updatePayload

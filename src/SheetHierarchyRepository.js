@@ -30,6 +30,41 @@ export class SheetHierarchyRepository {
   }
 
   /**
+   * シート1行目の見出しから、PROJECT_COLUMNS で定義された全ての列の表示名を取得する。
+   * 互換性のため、従来通り taskId/title/dueDate/status というエイリアスも含めて返す。
+   * @returns {Promise<{[key: string]: string}>}
+   */
+  async fetchHeaderLabels() {
+    // ヘッダーは getRows() ではなく headerValues から取得する
+    await this.doc.loadInfo();
+    this.sheet = this.doc.sheetsByTitle[this.projectSheetName];
+    if (!this.sheet) {
+      throw new Error(`シート「${this.projectSheetName}」が見つかりません。`);
+    }
+
+    // 1行目をヘッダーとして読み込む
+    await this.sheet.loadHeaderRow();
+    const header = this.sheet.headerValues || []; // ['プロジェクトID', 'タイトル', ...] のような配列
+
+    const safe = (index) => this.#stringOrEmpty(header[index]);
+
+    // PROJECT_COLUMNS のキーごとにヘッダー名をマッピング
+    const labelsByColumnKey = {};
+    for (const [key, index] of Object.entries(PROJECT_COLUMNS)) {
+      labelsByColumnKey[key] = safe(index);
+    }
+
+    // 既存利用箇所向けのエイリアスも含めて返却（将来的に columns.TASK_ID などにも拡張可能）
+    return {
+      ...labelsByColumnKey,
+      taskId: labelsByColumnKey.TASK_ID,
+      title: labelsByColumnKey.TASK_TITLE,
+      dueDate: labelsByColumnKey.DUE_DATE,
+      status: labelsByColumnKey.STATUS
+    };
+  }
+
+  /**
    * スプレッドシートからユニークな親行（プロジェクト）を取得する。
    * @param {{cursor?: number, limit?: number}} [options]
    * @returns {Promise<Array<object>>}

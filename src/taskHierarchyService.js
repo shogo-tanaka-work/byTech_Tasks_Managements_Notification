@@ -55,14 +55,18 @@ export class TaskHierarchyService {
    */
   async #buildSnapshotForParent(parentRow) {
     const rawChildren = (await this.repository.fetchChildRows(parentRow.projectId)) || [];
-    const { validChildren, invalidChildren } = this.#partitionChildren(rawChildren);
+
+    // 1行目のヘッダー表示名を取得（取得できなければ null）
+    const headerLabels = (await this.repository.fetchHeaderLabels?.()) || null;
+
+    const { validChildren, invalidChildren } = this.#partitionChildren(rawChildren, headerLabels);
 
     const annotatedChildren = validChildren.map((child) => ({
       ...child,
       markers: this.diffDetector.diff?.(parentRow.projectId, child) ?? []
     }));
-
-    const completion = this.#calculateCompletion(annotatedChildren);
+    // 進捗率は入力不備タスクも含めた「全タスク（rawChildren）」を母数として計算する
+    const completion = this.#calculateCompletion(rawChildren);
 
     return {
       rowIndex: parentRow.rowIndex,
@@ -80,19 +84,27 @@ export class TaskHierarchyService {
   /**
    * 必須項目の有無で子タスクを有効／無効に振り分ける。
    * @param {Array<object>} children
+   * @param {{taskId?: string, title?: string, dueDate?: string, status?: string}|null} headerLabels
    * @returns {{validChildren: Array<object>, invalidChildren: Array<object>}}
    * @private
    */
-  #partitionChildren(children) {
+  #partitionChildren(children, headerLabels) {
     const validChildren = [];
     const invalidChildren = [];
 
+    const labelFor = (fieldKey) => {
+      if (!headerLabels) return fieldKey;
+      return headerLabels[fieldKey] || fieldKey;
+    };
+
     children.forEach((child) => {
-      const missing = this.requiredChildFields.filter((field) => !this.#hasValue(child[field]));
-      if (missing.length) {
+      const missingKeys = this.requiredChildFields.filter((field) => !this.#hasValue(child[field]));
+      if (missingKeys.length) {
+        const missingLabels = missingKeys.map(labelFor);
         invalidChildren.push({
           taskId: child.taskId || '不明',
-          reason: `${missing.join(', ')} が未入力です。`
+          title: child.title || '',
+          reason: `${missingLabels.join(', ')} が未入力です。`
         });
         return;
       }
