@@ -1,4 +1,6 @@
-// Vercel環境: 環境変数は自動的に process.env に注入される
+// Express App
+//
+// 本番環境: 環境変数は自動的に process.env に注入される
 // ローカル開発: `npm run dev` で --env-file=.env を使用（package.json参照）
 // したがって、dotenv パッケージは不要
 
@@ -25,12 +27,12 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// ルート: vercel.jsonのrewriteにより、すべてのリクエストがこのアプリに渡される
+// ルートエンドポイント
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'TaskThreadSync API (v2)' });
 });
 
-// /api/sync としてアクセス可能（元のパスが保持される）
+// タスク同期APIエンドポイント
 app.post('/api/sync', requireAuth, async (req, res) => {
   console.log('Received sync trigger via API (v2)');
   try {
@@ -52,10 +54,11 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   }
 });
 
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-  });
-}
+// サーバー起動
+// 本番環境でもローカル開発でもポートをリッスン
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
 
+// モジュールとしてエクスポート
 export default app;
