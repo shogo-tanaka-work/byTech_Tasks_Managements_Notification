@@ -22,10 +22,12 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// ルート: vercel.jsonのrewriteにより、すべてのリクエストがこのアプリに渡される
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'TaskThreadSync API (v2)' });
 });
 
+// /api/sync としてアクセス可能（元のパスが保持される）
 app.post('/api/sync', requireAuth, async (req, res) => {
   console.log('Received sync trigger via API (v2)');
   try {
