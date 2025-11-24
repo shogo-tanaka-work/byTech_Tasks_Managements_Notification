@@ -1,7 +1,6 @@
-// Express App for Vercel
-// 参考: https://vercel.com/docs/frameworks/backend/express
+// Express App
 //
-// Vercel環境: 環境変数は自動的に process.env に注入される
+// 本番環境: 環境変数は自動的に process.env に注入される
 // ローカル開発: `npm run dev` で --env-file=.env を使用（package.json参照）
 // したがって、dotenv パッケージは不要
 
@@ -55,14 +54,11 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   }
 });
 
-// ローカル開発時のみポートをリッスン
-// Vercel環境ではこのブロックはスキップされ、デフォルトエクスポートが使用される
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-  });
-}
+// サーバー起動
+// 本番環境でもローカル開発でもポートをリッスン
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
 
-// Vercel用にExpressアプリをエクスポート
-// 参考: https://vercel.com/docs/frameworks/backend/express#using-a-default-export
+// モジュールとしてエクスポート
 export default app;
