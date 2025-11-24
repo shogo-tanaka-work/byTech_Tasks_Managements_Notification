@@ -1,21 +1,11 @@
-// Vercel Serverless Function Handler
+// Vercel Serverless Function Handler (ES Module)
 // 参考: https://vercel.com/docs/frameworks/backend/express
-// CommonJSで動的にES Moduleをインポート
 
-let app;
+import app from '../src/server.js';
 
-async function getApp() {
-  if (!app) {
-    const { default: expressApp } = await import('../src/server.js');
-    app = expressApp;
-  }
-  return app;
-}
-
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   try {
-    const expressApp = await getApp();
-    return expressApp(req, res);
+    return app(req, res);
   } catch (error) {
     console.error('Error loading server:', error);
     console.error('Stack:', error.stack);
@@ -25,4 +15,4 @@ module.exports = async function handler(req, res) {
       stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined
     });
   }
-};
+}
