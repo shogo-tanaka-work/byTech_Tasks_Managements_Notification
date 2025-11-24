@@ -1,8 +1,13 @@
+/**
+ * スレッド名のフォーマットテンプレート。
+ * プロジェクトタイトルと進捗率を組み合わせて表示する。
+ */
 const DEFAULT_THREAD_NAME_TEMPLATE = (snapshot) =>
   `${snapshot.title} | ${snapshot.completion?.percentage ?? 0}%`;
 
 /**
  * プロジェクト取得・Discord 投稿・状態保存まで、同期サイクル全体を連携させる。
+ * アプリケーション層として、各サービスを組み合わせて全体フローを制御する。
  */
 export class Orchestrator {
   constructor({ taskService, discordClient, formatter, logger = console } = {}) {
@@ -17,7 +22,8 @@ export class Orchestrator {
 
   /**
    * サーバー／API から呼び出され、一度の同期処理を実行する入口。
-   * @returns {Promise<{success: number, failed: number, errors: Array<object>}>}
+   * 全プロジェクトのスナップショットを取得し、Discord への投稿を実行する。
+   * @returns {Promise<{success: number, failed: number, errors: Array<object>}>} 処理結果サマリー
    */
   async run() {
     this.logger.log('Initializing Orchestrator...');
@@ -26,11 +32,12 @@ export class Orchestrator {
 
   /**
    * スナップショットを構築し処理しながら、成功・失敗などの統計を記録する。
-   * @returns {Promise<{success: number, failed: number, errors: Array<object>}>}
+   * エラーが発生した場合も処理を継続し、最終的に全体のサマリーを返す。
+   * @returns {Promise<{success: number, failed: number, errors: Array<object>}>} 処理結果サマリー
    * @private
    */
   async #executeSyncCycle() {
-    // ここでシートの読み込みが行われる。リアルタイム取得ではなくインスタンス生成時点での内容となる。
+    // ここでシートの読み込みが行われる。リアルタイム取得ではなく実行時点での内容となる。
     const snapshots = await this.taskService.buildProjectSnapshots();
     this.logger.log(`処理対象プロジェクト数: ${snapshots.length}`);
 
@@ -57,7 +64,8 @@ export class Orchestrator {
 
   /**
    * Discord スレッドの確保・投稿・書き戻し・進捗保存までを一連で行う。
-   * @param {object} snapshot
+   * 新規スレッドの場合は作成してIDをシートに保存、既存スレッドの場合は更新を投稿する。
+   * @param {object} snapshot - プロジェクトスナップショット
    * @returns {Promise<void>}
    * @private
    */

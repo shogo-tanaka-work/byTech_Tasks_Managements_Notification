@@ -1,9 +1,13 @@
 import { DISCORD_SETTINGS } from './config.js';
+import { TASK_STATUS, PROGRESS_STATUS, DISCORD_EMOJI, TASK_MARKERS } from './constants.js';
+import { formatTimestampJST, isPastDate } from './utils/dateUtils.js';
+import { truncate } from './utils/stringUtils.js';
 
 const { MAX_CONTENT_LENGTH } = DISCORD_SETTINGS;
 
 /**
  * スナップショットデータを Discord で扱いやすいスレッド投稿に変換する。
+ * プレゼンテーション層として、ビジネスデータをDiscordメッセージ形式に整形する責務を持つ。
  */
 export class NotificationFormatter {
   /**
@@ -50,11 +54,11 @@ export class NotificationFormatter {
    */
   #buildSimpleHeader(snapshot) {
     const { projectId, timestamp, completion } = snapshot;
-    const formattedTimestamp = this.#formatTimestampJST(timestamp);
+    const formattedTimestamp = formatTimestampJST(timestamp);
     let header = '進捗サマリ\n';
     header += `${completion.percentage}% 完了 (${completion.done}/${completion.total})\n`;
     header += `最終更新日時: ${formattedTimestamp}`;
-    return header.slice(0, MAX_CONTENT_LENGTH);
+    return truncate(header, MAX_CONTENT_LENGTH);
   }
 
   /**
@@ -87,11 +91,11 @@ export class NotificationFormatter {
   #buildHeader(snapshot) {
     const { projectId, timestamp, completion } = snapshot;
     const progressStatus = this.#determineProgressStatus(snapshot.children);
-    const formattedTimestamp = this.#formatTimestampJST(timestamp);
+    const formattedTimestamp = formatTimestampJST(timestamp);
     
     // 遅延時のメンション
     let header = '';
-    if (progressStatus === '遅延') {
+    if (progressStatus === PROGRESS_STATUS.DELAYED) {
       header += `<@${DISCORD_SETTINGS.NOTIFY_USER.ONDELAY}>\n`;
     }
     
@@ -99,9 +103,9 @@ export class NotificationFormatter {
     header += `${completion.percentage}% 完了 (${completion.done}/${completion.total})\n`;
     header += `最終更新日時: ${formattedTimestamp}`;
     if (snapshot.invalidChildren?.length) {
-      header += `\n⚠️警告: ${snapshot.invalidChildren.length} 件のタスクに入力不備があります。`;
+      header += `\n${DISCORD_EMOJI.WARNING}警告: ${snapshot.invalidChildren.length} 件のタスクに入力不備があります。`;
     }
-    return header.slice(0, MAX_CONTENT_LENGTH);
+    return truncate(header, MAX_CONTENT_LENGTH);
   }
 
   /**
@@ -112,52 +116,16 @@ export class NotificationFormatter {
    */
   #determineProgressStatus(children) {
     // 完了以外のタスクを抽出
-    const incompleteTasks = children.filter((child) => child.status !== '完了');
+    const incompleteTasks = children.filter((child) => child.status !== TASK_STATUS.COMPLETED);
     
     if (incompleteTasks.length === 0) {
-      return 'オンスケ';
+      return PROGRESS_STATUS.ON_SCHEDULE;
     }
 
-    // 今日の日付（時刻を00:00:00にして比較）
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
     // 期限が過ぎているタスクがあるかチェック
-    const hasOverdueTasks = incompleteTasks.some((task) => {
-      if (!task.dueDate) {
-        return false; // 期限未設定のタスクは遅延判定に含めない
-      }
+    const hasOverdueTasks = incompleteTasks.some((task) => isPastDate(task.dueDate));
 
-      const dueDate = new Date(task.dueDate);
-      dueDate.setHours(0, 0, 0, 0);
-      
-      // 期限が今日より前（当日は含まない）
-      return dueDate < today;
-    });
-
-    return hasOverdueTasks ? '遅延' : 'オンスケ';
-  }
-
-  /**
-   * タイムスタンプをJST（日本標準時）で「YYYY/MM/DD HH:mm:ss」形式にフォーマットする。
-   * @param {string} timestamp - ISO 8601形式のタイムスタンプ
-   * @returns {string} フォーマットされた日時文字列
-   * @private
-   */
-  #formatTimestampJST(timestamp) {
-    const date = new Date(timestamp);
-    
-    // JSTに変換（UTC+9）
-    const jstDate = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
-    
-    const year = jstDate.getFullYear();
-    const month = String(jstDate.getMonth() + 1).padStart(2, '0');
-    const day = String(jstDate.getDate()).padStart(2, '0');
-    const hours = String(jstDate.getHours()).padStart(2, '0');
-    const minutes = String(jstDate.getMinutes()).padStart(2, '0');
-    const seconds = String(jstDate.getSeconds()).padStart(2, '0');
-    
-    return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+    return hasOverdueTasks ? PROGRESS_STATUS.DELAYED : PROGRESS_STATUS.ON_SCHEDULE;
   }
 
   /**
@@ -173,13 +141,13 @@ export class NotificationFormatter {
       { name: '未完了', value: `${snapshot.completion.total - snapshot.completion.done}`, inline: true }
     ];
 
-    const inProgressTasks = snapshot.children.filter((child) => child.status === '着手中');
+    const inProgressTasks = snapshot.children.filter((child) => child.status === TASK_STATUS.IN_PROGRESS);
     const taskLines = inProgressTasks.map((child) => this.#formatTaskLine(child)).join('\n');
 
     const description =
       inProgressTasks.length === 0
         ? '着手中のタスクはありません。'
-        : taskLines.slice(0, MAX_CONTENT_LENGTH);
+        : truncate(taskLines, MAX_CONTENT_LENGTH);
 
     return {
       title: '着手中タスク一覧',
@@ -205,6 +173,12 @@ export class NotificationFormatter {
     });
   }
 
+  /**
+   * タスク情報を1行のテキストにフォーマットする。
+   * @param {object} child - タスクオブジェクト
+   * @returns {string}
+   * @private
+   */
   #formatTaskLine(child) {
     const markers = (child.markers || []).map((marker) => this.#markerLabel(marker)).join(' ');
     const dueText = child.dueDate ? `期限: ${child.dueDate}` : '期限未設定';
@@ -212,14 +186,20 @@ export class NotificationFormatter {
     const taskIdBold = '**' + child.taskId + '**';
     const parts = [markers, taskIdBold, child.title, assignee, dueText, child.status];
     const separator = ' / ';
-    return parts.filter(p => p).join(separator).trim();
+    return parts.filter((p) => p).join(separator).trim();
   }
 
+  /**
+   * マーカー種別に応じた絵文字を返す。
+   * @param {string} marker - マーカー種別
+   * @returns {string}
+   * @private
+   */
   #markerLabel(marker) {
-    if (marker === 'deadline') {
-      return ':warning:';
-    } else if (marker === 'statusChanged') {
-      return ':information_source:';
+    if (marker === TASK_MARKERS.DEADLINE) {
+      return DISCORD_EMOJI.WARNING;
+    } else if (marker === TASK_MARKERS.STATUS_CHANGED) {
+      return DISCORD_EMOJI.INFO;
     } else {
       return '';
     }

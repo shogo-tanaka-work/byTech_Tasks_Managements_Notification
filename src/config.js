@@ -29,6 +29,17 @@ export const PROJECT_COLUMNS = {
 };
 
 /**
+ * スレッドID列の更新に使用するセル範囲設定。
+ * loadCells と getCell で使用される 0-based のインデックス。
+ */
+export const THREAD_ID_CELL_CONFIG = {
+  COLUMN_INDEX: PROJECT_COLUMNS.THREAD_ID,
+  // startColumnIndex/endColumnIndex は [start, end) の半開区間
+  START_COLUMN_INDEX: PROJECT_COLUMNS.THREAD_ID,
+  END_COLUMN_INDEX: PROJECT_COLUMNS.THREAD_ID + 1
+};
+
+/**
  * Discord 関連の設定値。
  */
 export const DISCORD_SETTINGS = {
@@ -38,5 +49,5 @@ export const DISCORD_SETTINGS = {
   MAX_CONTENT_LENGTH: 1800,
   NOTIFY_USER: {
     ONDELAY: '123456789012345678'
-  },
+  }
 };

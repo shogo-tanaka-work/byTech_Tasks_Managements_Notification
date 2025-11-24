@@ -3,7 +3,9 @@ import { DISCORD_SETTINGS } from './config.js';
 const { DEFAULT_BACKOFF_MS, API_BASE_URL, THREAD_AUTO_ARCHIVE_MINUTES } = DISCORD_SETTINGS;
 
 /**
- * Discord フォーラムスレッドへスナップショットを投稿するための簡易 REST クライアント。リトライを内蔵する。
+ * Discord フォーラムスレッドへスナップショットを投稿するための簡易 REST クライアント。
+ * インフラストラクチャ層として、Discord API との通信を担当する。
+ * レート制限対応のリトライ機能を内蔵。
  */
 export class DiscordForumClient {
   constructor({ botToken, forumChannelId, baseUrl = API_BASE_URL, logger = console } = {}) {
@@ -98,11 +100,12 @@ export class DiscordForumClient {
   }
 
   /**
-   * Discord 用ヘッダーを付与しつつ HTTP リクエストを実行し、429 の際はバックオフする。
-   * @param {string} url
-   * @param {RequestInit} options
-   * @param {number} [attempt=0]
-   * @returns {Promise<{body: any}>}
+   * Discord 用ヘッダーを付与しつつ HTTP リクエストを実行し、429（レート制限）の際は指数バックオフでリトライする。
+   * @param {string} url - リクエストURL
+   * @param {RequestInit} options - fetch オプション
+   * @param {number} [attempt=0] - 現在のリトライ回数
+   * @returns {Promise<{body: any}>} レスポンスボディ
+   * @throws {Error} リトライ上限到達時、または4xx/5xxエラー時
    * @private
    */
   async #requestWithRetry(url, options, attempt = 0) {
@@ -143,7 +146,7 @@ export class DiscordForumClient {
 
   /**
    * リトライ用のバックオフ待機を行う簡易ディレイ。
-   * @param {number} ms
+   * @param {number} ms - 待機するミリ秒数
    * @returns {Promise<void>}
    * @private
    */

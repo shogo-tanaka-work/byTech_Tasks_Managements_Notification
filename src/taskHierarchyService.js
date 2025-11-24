@@ -1,11 +1,16 @@
+import { TASK_STATUS, REQUIRED_TASK_FIELDS } from './constants.js';
+import { getMissingFields } from './utils/validationUtils.js';
+import { getCurrentTimestamp } from './utils/dateUtils.js';
+
 /**
  * リポジトリのデータから正規化されたプロジェクトスナップショットを構築し、完了状況を集計する。
+ * ドメイン層として、ビジネスロジック（検証、集計）を担当する。
  */
 export class TaskHierarchyService {
   constructor({
     repository,
     diffDetector = {},
-    clock = () => new Date().toISOString(),
+    clock = getCurrentTimestamp,
     logger = console
   } = {}) {
     if (!repository) {
@@ -16,7 +21,7 @@ export class TaskHierarchyService {
     this.diffDetector = diffDetector;
     this.clock = clock;
     this.logger = logger;
-    this.requiredChildFields = ['taskId', 'title', 'dueDate', 'status'];
+    this.requiredChildFields = REQUIRED_TASK_FIELDS;
   }
 
   /**
@@ -98,7 +103,7 @@ export class TaskHierarchyService {
     };
 
     children.forEach((child) => {
-      const missingKeys = this.requiredChildFields.filter((field) => !this.#hasValue(child[field]));
+      const missingKeys = getMissingFields(child, this.requiredChildFields);
       if (missingKeys.length) {
         const missingLabels = missingKeys.map(labelFor);
         invalidChildren.push({
@@ -115,19 +120,6 @@ export class TaskHierarchyService {
   }
 
   /**
-   * トリム後に有効な値が入っているかを判定する。
-   * @param {*} value
-   * @returns {boolean}
-   * @private
-   */
-  #hasValue(value) {
-    if (value === null || value === undefined) {
-      return false;
-    }
-    return String(value).trim().length > 0;
-  }
-
-  /**
    * 子タスクを集計して完了メトリクスを算出する。
    * 以前は ProgressSnapshotService に存在していた calculate ロジックを統合している。
    * @param {Array<object>} children
@@ -136,7 +128,7 @@ export class TaskHierarchyService {
    */
   #calculateCompletion(children = []) {
     const total = children.length;
-    const done = children.filter((child) => child.status === '完了').length;
+    const done = children.filter((child) => child.status === TASK_STATUS.COMPLETED).length;
     const percentage = total === 0 ? 0 : Math.round((done / total) * 100);
     return {
       total,

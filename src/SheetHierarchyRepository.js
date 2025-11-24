@@ -1,9 +1,11 @@
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
-import { PROJECT_SHEET_NAME, PROJECT_COLUMNS } from './config.js';
+import { PROJECT_SHEET_NAME, PROJECT_COLUMNS, THREAD_ID_CELL_CONFIG } from './config.js';
+import { stringOrEmpty } from './utils/stringUtils.js';
 
 /**
  * 親子タスク行の取得やスレッド ID の保存など、Google Sheets とのやり取りを集約する。
+ * インフラストラクチャ層として、Google Sheets API との通信を担当する。
  */
 export class SheetHierarchyRepository {
   constructor({
@@ -46,12 +48,10 @@ export class SheetHierarchyRepository {
     await this.sheet.loadHeaderRow();
     const header = this.sheet.headerValues || []; // ['プロジェクトID', 'タイトル', ...] のような配列
 
-    const safe = (index) => this.#stringOrEmpty(header[index]);
-
     // PROJECT_COLUMNS のキーごとにヘッダー名をマッピング
     const labelsByColumnKey = {};
     for (const [key, index] of Object.entries(PROJECT_COLUMNS)) {
-      labelsByColumnKey[key] = safe(index);
+      labelsByColumnKey[key] = stringOrEmpty(header[index]);
     }
 
     // 既存利用箇所向けのエイリアスも含めて返却（将来的に columns.TASK_ID などにも拡張可能）
@@ -78,7 +78,7 @@ export class SheetHierarchyRepository {
 
     rows.forEach((row, index) => {
       const rawData = row._rawData || [];
-      const projectId = this.#stringOrEmpty(rawData[PROJECT_COLUMNS.PROJECT_ID]);
+      const projectId = stringOrEmpty(rawData[PROJECT_COLUMNS.PROJECT_ID]);
       if (!projectId || seen.has(projectId)) {
         return;
       }
@@ -86,8 +86,8 @@ export class SheetHierarchyRepository {
       uniqueProjects.push({
         rowIndex: index,
         projectId,
-        title: this.#stringOrEmpty(rawData[PROJECT_COLUMNS.PROJECT_TITLE]),
-        owner: this.#stringOrEmpty(rawData[PROJECT_COLUMNS.OWNER]),
+        title: stringOrEmpty(rawData[PROJECT_COLUMNS.PROJECT_TITLE]),
+        owner: stringOrEmpty(rawData[PROJECT_COLUMNS.OWNER]),
         threadId: rawData[PROJECT_COLUMNS.THREAD_ID] ?? ''
       });
     });
@@ -108,18 +108,18 @@ export class SheetHierarchyRepository {
     return rows
       .map((row, index) => ({ rawData: row._rawData || [], rowIndex: index }))
       .filter((entry) => {
-        const rowProjectId = this.#stringOrEmpty(entry.rawData[PROJECT_COLUMNS.PROJECT_ID]);
-        const taskId = this.#stringOrEmpty(entry.rawData[PROJECT_COLUMNS.TASK_ID]);
+        const rowProjectId = stringOrEmpty(entry.rawData[PROJECT_COLUMNS.PROJECT_ID]);
+        const taskId = stringOrEmpty(entry.rawData[PROJECT_COLUMNS.TASK_ID]);
         return rowProjectId === projectId && taskId.length > 0;
       })
       .map((entry) => ({
         rowIndex: entry.rowIndex,
-        taskId: this.#stringOrEmpty(entry.rawData[PROJECT_COLUMNS.TASK_ID]),
+        taskId: stringOrEmpty(entry.rawData[PROJECT_COLUMNS.TASK_ID]),
         projectId,
-        title: this.#stringOrEmpty(entry.rawData[PROJECT_COLUMNS.TASK_TITLE]),
+        title: stringOrEmpty(entry.rawData[PROJECT_COLUMNS.TASK_TITLE]),
         assignee: '',
         dueDate: entry.rawData[PROJECT_COLUMNS.DUE_DATE] ?? '',
-        status: this.#stringOrEmpty(entry.rawData[PROJECT_COLUMNS.STATUS]),
+        status: stringOrEmpty(entry.rawData[PROJECT_COLUMNS.STATUS]),
         completedAt: entry.rawData[PROJECT_COLUMNS.COMPLETED_AT] ?? '',
         notes: entry.rawData[PROJECT_COLUMNS.NOTES] ?? ''
       }));
@@ -146,11 +146,11 @@ export class SheetHierarchyRepository {
     await this.sheet.loadCells({
       startRowIndex: rowIndex + 1,
       endRowIndex: rowIndex + 2,
-      startColumnIndex: 9,
-      endColumnIndex: 10
+      startColumnIndex: THREAD_ID_CELL_CONFIG.START_COLUMN_INDEX,
+      endColumnIndex: THREAD_ID_CELL_CONFIG.END_COLUMN_INDEX
     });
 
-    const cell = this.sheet.getCell(rowIndex + 1, 9);
+    const cell = this.sheet.getCell(rowIndex + 1, THREAD_ID_CELL_CONFIG.COLUMN_INDEX);
     cell.value = threadId;
     await this.sheet.saveUpdatedCells();
   }
@@ -170,18 +170,5 @@ export class SheetHierarchyRepository {
       this.cachedRows = await this.sheet.getRows();
     }
     return this.cachedRows;
-  }
-
-  /**
-   * セル値をトリム済みの文字列へ正規化する。
-   * @param {*} value
-   * @returns {string}
-   * @private
-   */
-  #stringOrEmpty(value) {
-    if (value === null || value === undefined) {
-      return '';
-    }
-    return String(value).trim();
   }
 }

@@ -1,8 +1,8 @@
 import { SheetHierarchyRepository } from './SheetHierarchyRepository.js';
-import { TaskHierarchyService } from './TaskHierarchyService.js';
-import { NotificationFormatter } from './NotificationFormatter.js';
-import { DiscordForumClient } from './DiscordForumClient.js';
-import { Orchestrator } from './Orchestrator.js';
+import { TaskHierarchyService } from './taskHierarchyService.js';
+import { NotificationFormatter } from './notificationFormatter.js';
+import { DiscordForumClient } from './discordForumClient.js';
+import { Orchestrator } from './orchestrator.js';
 
 /**
  * 同期アプリに必要な依存関係を遅延初期化で束ね、ランタイム全体で一貫したインスタンスを提供する。
