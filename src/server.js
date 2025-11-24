@@ -1,4 +1,7 @@
-import 'dotenv/config';
+// Vercel環境: 環境変数は自動的に process.env に注入される
+// ローカル開発: `npm run dev` で --env-file=.env を使用（package.json参照）
+// したがって、dotenv パッケージは不要
+
 import express from 'express';
 import { AppFactory } from './AppFactory.js';
 
